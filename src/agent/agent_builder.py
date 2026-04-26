@@ -4,6 +4,7 @@ from langchain_core.runnables import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 from src.agent.memory_manager import get_session_history
 from src.config.settings import settings
+from src.extractors.structured_extractor import StructuredExtractor
 from src.tools.database_tool import DatabaseTool
 from src.tools.tavily_tool import TavilyTool
 from src.tools.weather_tool import WeatherTool
@@ -17,7 +18,12 @@ class AgentBuilder:
             api_key=settings.api.dashscope_api_key.get_secret_value(),
             base_url=settings.api.dashscope_base_url
         )
-        self.tools = [DatabaseTool(), WeatherTool(), TavilyTool()]
+        self.tools = [
+            DatabaseTool(),
+            WeatherTool(),
+            TavilyTool(),
+            StructuredExtractor(),
+        ]
 
     def build(self):
         # 定义 prompt

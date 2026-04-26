@@ -19,7 +19,9 @@ engine = create_engine(
 
 # 给数据模型贴标签，并自动进行格式转化（双向）
 class DatabaseQueryInput(BaseModel):
-    query: str = Field(description="SQL SELECT 查询语句") # 把query翻译成说明书
+    query: str = Field(
+        description="""用于执行 PostgreSQL 数据库只读查询的工具。输入必须是完整的 SELECT 语句。注意：INSERT/UPDATE/DELETE 等写操作会被拒绝。"""
+    ) # 把query翻译成说明书
 
 # 可以被外部系统 LangChain 调用
 class DatabaseTool(BaseTool):
