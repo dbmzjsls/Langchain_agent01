@@ -21,15 +21,28 @@
 │  └────────┼───────┘                │
 └───────────┼────────────────────────┘
             │
-    ┌───────┼───────┬────────────────┐
-    ▼       ▼       ▼                ▼
-┌──────┐ ┌──────┐ ┌──────┐    ┌──────────┐
-│数据库 │ │天气  │ │搜索  │    │结构化提取 │
-│查询  │ │查询  │ │工具  │    │(独立能力) │
-└──────┘ └──────┘ └──────┘    └──────────┘
+    ┌───────┼───────┬──────────────┐
+    ▼       ▼       ▼              ▼
+┌──────┐ ┌──────┐ ┌──────┐  ┌──────────┐
+│数据库 │ │天气  │ │搜索  │  │结构化提取 │    ← FC 硬编码工具
+│查询  │ │查询  │ │工具  │  │(独立能力) │
+└──────┘ └──────┘ └──────┘  └──────────┘
+    │       │       │              │
+    └───────┴───────┴──────────────┘
+                    │
+          ┌─────────▼─────────┐
+          │   MCP Server      │  ← FastMCP 动态暴露工具
+          │ (streamable_http) │
+          └─────────┬─────────┘
+                    │
+          ┌─────────▼─────────┐
+          │   MCP Client      │  ← 自动发现 + 动态 Bridge
+          │ (BaseTool 适配)   │
+          └───────────────────┘
 ```
 
-**核心流程：** 用户输入 → LLM 推理决定工具调用 → 工具执行并返回结果 → LLM 综合信息生成最终回答 → 保存对话历史
+**FC 模式（默认）：** LLM 直接调用硬编码工具
+**MCP 混合模式：** LLM → AgentExecutor → MCP Client (工具发现+适配) → MCP Server (工具暴露) → 实际工具函数
 
 ---
 
@@ -43,6 +56,7 @@
 | **对话记忆** | 按 session 管理多轮对话上下文 | 内存存储的 InMemoryChatMessageHistory |
 | **结构化提取** | 从文本中按 Schema 提取结构化信息 | LLM `with_structured_output()` + Pydantic Schema |
 | **容错重试** | 网络异常自动重试 + 降级方案 | tenacity 指数退避重试 + 自定义 fallback 机制 |
+| **MCP 混合模式** | FC 工具动态暴露为 MCP Server，Agent 通过 MCP Client 自动发现并调用 | FastMCP + streamable_http + 动态 BaseTool 适配 |
 
 ---
 
@@ -73,9 +87,10 @@ Langchain_agent01/
 ├── uv.lock                     # 依赖版本锁文件
 ├── README.md                   # 本文件
 └── src/
-    ├── main.py                 # 程序入口 (CLI 交互循环)
+    ├── main.py                 # 程序入口 — FC 模式（CLI 交互循环）
+    ├── main_mcp.py             # 程序入口 — MCP 混合模式
     ├── agent/
-    │   ├── agent_builder.py    # Agent 组装器 (LLM + 工具 + Prompt + 记忆)
+    │   ├── agent_builder.py    # Agent 组装器 (LLM + FC工具 + MCP工具 + Prompt + 记忆)
     │   └── memory_manager.py   # 对话历史管理器
     ├── config/
     │   └── settings.py         # 全局配置 (Pydantic Settings, 三层嵌套)
@@ -83,7 +98,9 @@ Langchain_agent01/
     │   ├── database_tool.py    # PostgreSQL 只读查询工具
     │   ├── tavily_tool.py      # Tavily 互联网搜索工具
     │   ├── weather_tool.py     # OpenWeatherMap 天气查询工具
-    │   └── retry_decorator.py  # 通用重试 + 降级装饰器
+    │   ├── retry_decorator.py  # 通用重试 + 降级装饰器
+    │   ├── mcp_server.py       # FastMCP Server (动态暴露 FC 工具)
+    │   └── mcp_client.py       # MCP Client (自动发现 + 动态 BaseTool 适配)
     ├── extractors/
     │   └── structured_extractor.py  # 结构化数据提取器
     └── utils/
@@ -140,9 +157,17 @@ DB_PASSWORD=your_password
 
 ### 3. 运行
 
+**FC 模式（默认）：**
 ```bash
 uv run python -m src.main
 ```
+
+**MCP 混合模式：**
+```bash
+uv run python -m src.main_mcp
+```
+
+> MCP 混合模式会自动启动 MCP Server 后台进程，Agent 通过 MCP Client 动态发现工具。两种模式共用同一套 FC 工具，区别在于调用路径不同。
 
 进入交互式命令行后，可以直接用自然语言提问，例如：
 
@@ -173,6 +198,14 @@ uv run python -m src.main
 - 通过 Tavily Search API 进行互联网搜索（专为 AI Agent 优化）
 - 每次搜索返回最多 3 条结果（含标题、摘要 200 字、URL）
 - 支持重试（2 次，指数退避 2~8 秒）
+
+### MCP Server & Client — MCP 协议桥接
+
+- 使用 **FastMCP** 将已有的 FC 工具（天气查询、数据库查询）动态暴露为 MCP Server
+- 基于 `streamable_http` 传输协议，支持无状态连接
+- **MCP Client** 通过 `list_tools()` 自动发现 Server 上的工具
+- 自动化工厂 `_create_one_tool()`：读取 MCP 工具的 `inputSchema` → 动态创建 Pydantic model → 生成 LangChain `BaseTool` 子类
+- 关键点：`args_schema` 字段必须正确设置为动态 Pydantic model，LangChain 才能将参数定义传递给 LLM
 
 ### retry_decorator — 通用容错机制
 
@@ -233,7 +266,7 @@ LLM_MODEL_NAME=deepseek-chat
 
 ## 注意事项
 
-- 本项目版本 `0.1.0`，处于早期开发阶段，适合概念验证和本地开发测试
+- 本项目版本 `0.2.0`，处于早期开发阶段，适合概念验证和本地开发测试
 - 对话历史存储在内存中，进程重启即清空
 - 数据库工具默认连接本地 PostgreSQL，请确保数据库已启动
 - `.env` 文件包含敏感信息，请勿提交到版本控制（已在 `.gitignore` 中排除）

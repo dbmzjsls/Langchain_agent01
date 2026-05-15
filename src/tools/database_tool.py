@@ -26,7 +26,7 @@ class DatabaseQueryInput(BaseModel):
 # 可以被外部系统 LangChain 调用
 class DatabaseTool(BaseTool):
     name: str = "database_query"
-    description: str = "查询 PostgresSQL 数据库。仅支持 SELECT 语句。"
+    description: str = "查询 PostgreSQL 数据库。仅支持 SELECT 语句。"
     args_schema: Type[BaseModel] = DatabaseQueryInput # 把说明书加到工具上
 
     def _fallback(self, query: str) -> str:
